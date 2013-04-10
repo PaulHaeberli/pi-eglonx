@@ -1,10 +1,9 @@
 Raspberry Pi EGL on X: Update 10 Apr 2013
 ----------------------------------------
 
-This is an update of eglonx for Raspberry pi. Fixing some crashes on start up and
-a pixel swapping error on the softwre conversion to 565 for drawing on 
-to the X window. Also added more complete handling of X window mouse and expose
-events.
+This is an update of eglonx for Raspberry pi. This fixes crashes on start up and
+a pixel swapping error on the software conversion to 565 for drawing on to the X 
+window. Also added more complete handling of X window mouse and expose events.
 
 Fixed startup crash by replacing this:
 

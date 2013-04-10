@@ -1,12 +1,14 @@
-/*  Created by exoticorn (http://talk.maemo.org/showthread.php?t=37356)
- *  edited and commented by André Bergner [endboss]
- *
- *  libraries needed: -lEGL -lGLESv2 -lbcm_host -lX11
- *
- */
+//
+//  Created by exoticorn (http://talk.maemo.org/showthread.php?t=37356)
+//  edited and commented by André Bergner [endboss]
+//
+//  libraries needed: -lEGL -lGLESv2 -lbcm_host -lX11
+//
+//
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <signal.h>
 #include <sys/time.h>
 #include <math.h>
 #include <X11/Xlib.h>
@@ -17,18 +19,18 @@
 #include <EGL/eglext_brcm.h>
 #include <bcm_host.h>
 
-// initial window size
+//// initial window size
 #define WINDOW_WIDTH    (800)
 #define WINDOW_HEIGHT   (480)
 
-// X windows globals
+//// X windows globals
 static Display *Xdsp;
 static Window Xwin;
 static XWindowAttributes Xgwa;
 static GC Xgc; 
 static XImage *Ximage = 0;
 
-// EGL globals
+//// EGL globals
 static EGLDisplay egl_display;
 static EGLContext egl_context;
 static EGLSurface egl_surface;
@@ -38,9 +40,25 @@ void client_motionevent(int posx, int posy);
 void client_mouseunclickevent(int posx, int posy, int button);
 void client_mouseclickevent(int posx, int posy, int button);
 void client_keypressevent(int posx, int posy, int key);
-void client_expose();
+void client_exposeevent();
 void client_render();
 void client_glinit();
+
+
+//// signal interrupt handler
+
+static bool sigkeeprunning = true;
+
+void sighandler(int dummy) 
+{
+    sigkeeprunning = false;
+}
+
+void signalinit()
+{
+    signal(SIGINT, sighandler);
+    signal(SIGQUIT, sighandler);
+}
 
 
 //// X window support 
@@ -96,7 +114,6 @@ void xwindowscleanup()
     XCloseDisplay(Xdsp);
 }
 
-
 void xdisplayGLbuffer()
 {
     static unsigned int *pixbuffer;
@@ -142,7 +159,7 @@ int xgetevents()
         switch(xev.type) {
             case Expose:
                 if(xev.xexpose.count == 0)
-                    client_expose();
+                    client_exposeevent();
                 break;
             case MotionNotify:
                 motionx = xev.xmotion.x;
@@ -174,6 +191,7 @@ int xgetevents()
     }
     return 1;
 }
+
 
 //// EGL support
 //
@@ -271,9 +289,9 @@ void eglcleanup()
 //// support for frames per second display
 
 static struct timeval fpst1, fpst2;
-static int fpsnframes = 0;
+static int fpsnframes = -1;
 
-void fpsinit()
+void _fpsinit()
 {
     gettimeofday(&fpst1, 0);
     fpsnframes = 0;
@@ -281,7 +299,10 @@ void fpsinit()
 
 int fpsreport()
 {
-    if((++fpsnframes % 20) == 0)
+    if(fpsnframes == -1)
+        _fpsinit();
+    fpsnframes++;
+    if((fpsnframes % 100) == 0)
         return 1;
     else
         return 0;
@@ -297,9 +318,10 @@ float fpsget()
     return fps;
 }
 
-//// client_ gl code follows
 
-const char vertex_src [] = "    \
+//// client gl code follows
+
+static const char vertex_src [] = "     \
     attribute vec4 position;    \
     varying mediump vec2 pos;   \
     uniform vec4 offset;        \
@@ -311,7 +333,7 @@ const char vertex_src [] = "    \
     }                                           \
 ";
 
-const char fragment_src [] = "  \
+static const char fragment_src [] = "   \
     varying mediump vec2 pos;   \
     uniform mediump float phase;\
                                 \
@@ -336,7 +358,7 @@ void print_shader_info_log(GLuint shader)
     if (length) {
         char* buffer = malloc(sizeof(char) * length);
         glGetShaderInfoLog(shader, length, NULL, buffer);
-        printf("shader info: %s\n",buffer);
+        //fprintf(stderr, "shader info: %s\n",buffer);
         fflush(NULL);
         free(buffer);
         GLint success;
@@ -354,10 +376,10 @@ GLuint load_shader(const char *shader_source, GLenum type)
     return shader;
 }
 
-GLfloat norm_x = 0.0, norm_y = 0.0;
-GLfloat offset_x = 0.0, offset_y = 0.0;
-GLfloat p1_pos_x = 0.0, p1_pos_y = 0.0;
-GLint phase_loc, offset_loc, position_loc;
+static GLfloat norm_x = 0.0, norm_y = 0.0;
+static GLfloat offset_x = 0.0, offset_y = 0.0;
+static GLfloat p1_pos_x = 0.0, p1_pos_y = 0.0;
+static GLint phase_loc, offset_loc, position_loc;
 
 const float vertexArray[] = {
         0.0, 0.5, 0.0,
@@ -366,8 +388,6 @@ const float vertexArray[] = {
         0.5, 0.0, 0.0,
         0.0, 0.5, 0.0 
 };
-
-//// User application 
 
 void client_glinit()
 {
@@ -417,59 +437,62 @@ void client_render()
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 5);
 }
 
+static int mousedown = 0;
+
 void client_motionevent(int posx, int posy)
 {
-    norm_x = (2.0*posx                /(float)WINDOW_WIDTH)-1.0;
-    norm_y = (2.0*(WINDOW_HEIGHT-posy)/(float)WINDOW_HEIGHT)-1.0;
+    if(mousedown) {
+        norm_x = (2.0*posx                /(float)WINDOW_WIDTH)-1.0;
+        norm_y = (2.0*(WINDOW_HEIGHT-posy)/(float)WINDOW_HEIGHT)-1.0;
+    }
 }
 
 void client_mouseclickevent(int posx, int posy, int button)
 {
-    fprintf(stderr,"mouse click at %d %d but: %d\n", posx, posy, button);
+    //fprintf(stderr,"mouse click at %d %d but: %d\n", posx, posy, button);
+    mousedown = 1;
 }
 
 void client_mouseunclickevent(int posx, int posy, int button)
 {
-    fprintf(stderr,"mouse unclick at %d %d but: %d\n", posx, posy, button);
+    //fprintf(stderr,"mouse unclick at %d %d but: %d\n", posx, posy, button);
+    mousedown = 0;
 }
 
 void client_keypressevent(int posx, int posy, int key)
 {
-    fprintf(stderr,"key press at %d %d key: %d\n", posx, posy, key);
+    //fprintf(stderr,"key press at %d %d key: %d\n", posx, posy, key);
 }
 
-void client_expose()
+void client_exposeevent()
 {
-    fprintf(stderr,"window expose\n");
+    //fprintf(stderr,"window expose\n");
 }
 
 //// generic main
 
 int main()
 {
+    signalinit();
     bcm_host_init();
     xwindowsinit();
     eglinit();
 
     fprintf(stderr,"Note: Press any key to quit\n");
-    fprintf(stderr,"Control-C will not free all graphics resourses\n");
     fprintf(stderr,"\n");
-
     client_glinit();
-
-    while(xgetevents()) { // the main loop
+    while(sigkeeprunning & xgetevents()) { // the main loop
 
         client_render();
 
         xdisplayGLbuffer();
 
         if (fpsreport())
-            printf("fps: %f\n", fpsget());
+            fprintf(stderr, "fps: %f\n", fpsget());
     }
 
-    eglcleanup();       // should do this on Control-C also
+    eglcleanup();
     xwindowscleanup();
     bcm_host_deinit();
-
     return 0;
 }
