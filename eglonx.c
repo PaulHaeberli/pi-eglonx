@@ -1,456 +1,475 @@
-/* Created by exoticorn ( http://talk.maemo.org/showthread.php?t=37356 )
- * edited and commented by André Bergner [endboss]
+/*  Created by exoticorn (http://talk.maemo.org/showthread.php?t=37356)
+ *  edited and commented by André Bergner [endboss]
  *
- * libraries needed: libx11-dev, libgles2-dev
+ *  libraries needed: -lEGL -lGLESv2 -lbcm_host -lX11
  *
  */
-
 #include <stdio.h>
-
 #include <stdlib.h>
 #include <stdbool.h>
 #include <sys/time.h>
 #include <math.h>
-
 #include <X11/Xlib.h>
 #include <X11/Xatom.h>
 #include <X11/Xutil.h>
-
-#define EGL_EGLEXT_PROTOTYPES
-
 #include <GLES2/gl2.h>
 #include <EGL/egl.h>
 #include <EGL/eglext_brcm.h>
 #include <bcm_host.h>
 
+// initial window size
+#define WINDOW_WIDTH    (800)
+#define WINDOW_HEIGHT   (480)
 
-const char vertex_src [] =
-" \
-attribute vec4 position; \
-varying mediump vec2 pos; \
-uniform vec4 offset; \
-\
-void main() \
-{ \
-	gl_Position = position + offset; \
-	pos = position.xy; \
-} \
+// X windows globals
+static Display *Xdsp;
+static Window Xwin;
+static XWindowAttributes Xgwa;
+static GC Xgc; 
+static XImage *Ximage = 0;
+
+// EGL globals
+static EGLDisplay egl_display;
+static EGLContext egl_context;
+static EGLSurface egl_surface;
+
+//// user supplied funcs
+void client_motionevent(int posx, int posy);
+void client_mouseunclickevent(int posx, int posy, int button);
+void client_mouseclickevent(int posx, int posy, int button);
+void client_keypressevent(int posx, int posy, int key);
+void client_expose();
+void client_render();
+void client_glinit();
+
+
+//// X window support 
+
+void xfixedsize(Display *dsp, Window win, int sizex, int sizey)
+{
+    XSizeHints *hints = XAllocSizeHints();
+    hints->flags = PMinSize | PMaxSize;
+    hints->min_width = sizex;
+    hints->max_width = sizex;
+    hints->min_height = sizey;
+    hints->max_height = sizey;
+    XSetWMNormalHints(dsp, win, hints);
+}
+
+void xwindowsinit()
+{
+    Xdsp = XOpenDisplay(NULL);
+    if (Xdsp == NULL) {
+        fputs("cannot connect to X server\n", stderr);
+        return;
+    }
+    Window root = DefaultRootWindow(Xdsp);
+
+    XSetWindowAttributes swa;
+    swa.event_mask = ExposureMask | 
+                     KeyPressMask | 
+                     KeyReleaseMask | 
+                     PointerMotionMask | 
+                     ButtonMotionMask | 
+                     ButtonPressMask | 
+                     ButtonReleaseMask;
+    Xwin = XCreateWindow(Xdsp, root, 0, 0, WINDOW_WIDTH, WINDOW_HEIGHT, 0, CopyFromParent, 
+                                InputOutput, CopyFromParent, CWEventMask, &swa);
+    XMapWindow(Xdsp, Xwin); // make the window visible on the screen
+    XStoreName(Xdsp, Xwin, "GL test"); // give the window a name
+    xfixedsize(Xdsp, Xwin, WINDOW_WIDTH, WINDOW_HEIGHT); // force fixed window size
+
+    //// create an X image for drawing to the screen
+    Xgc = DefaultGC(Xdsp, 0);
+    XGetWindowAttributes(Xdsp, Xwin, &Xgwa);
+    char *buf = (char *)malloc(Xgwa.width*Xgwa.height*2);
+    Ximage = XCreateImage(Xdsp, 
+                DefaultVisual(Xdsp, DefaultScreen(Xdsp)),
+                DefaultDepth(Xdsp, DefaultScreen(Xdsp)),
+                ZPixmap, 0, buf, Xgwa.width, Xgwa.height, 16, 0);
+
+}
+
+void xwindowscleanup()
+{
+    XDestroyWindow(Xdsp, Xwin);
+    XCloseDisplay(Xdsp);
+}
+
+
+void xdisplayGLbuffer()
+{
+    static unsigned int *pixbuffer;
+    static int pixbufferbytes;
+
+    int nbytes = Xgwa.height * Xgwa.width * 4;
+    if(pixbufferbytes != nbytes) {
+        if(pixbuffer)
+            free(pixbuffer);
+        pixbuffer = (unsigned int *)malloc(nbytes);
+        pixbufferbytes = nbytes;
+    }
+    glFinish();
+    glReadPixels(0, 0, Xgwa.width, Xgwa.height, GL_RGBA, GL_UNSIGNED_BYTE, pixbuffer);
+
+    int count = (Xgwa.width*Xgwa.height/2);
+    unsigned int *dest = (unsigned int*)(&(Ximage->data[0]));
+    unsigned int *pixptr = pixbuffer;
+    while (count--) {
+        unsigned int src0 = pixptr[0];
+        unsigned int src1 = pixptr[1];
+        pixptr += 2;
+
+        *dest++ = ((src1 & 0xf8)      <<24) |
+                  ((src1 & (0xfc<< 8))<<11) |
+                  ((src1 & (0xf8<<16))>> 3) |
+                  ((src0 & 0xf8)      << 8) |
+                  ((src0 & (0xfc<< 8))>> 5) |
+                  ((src0 & (0xf8<<16))>>19);
+    }
+    XPutImage(Xdsp, Xwin, Xgc, Ximage, 0, 0, 0, 0, Xgwa.width, Xgwa.height);
+}
+
+int xgetevents()
+{
+    int havemotion;
+    int motionx, motiony;
+
+    havemotion = 0;
+    while (XPending(Xdsp)) { // check for events from the x-server
+        XEvent xev;
+        XNextEvent(Xdsp, &xev);
+        switch(xev.type) {
+            case Expose:
+                if(xev.xexpose.count == 0)
+                    client_expose();
+                break;
+            case MotionNotify:
+                motionx = xev.xmotion.x;
+                motiony = WINDOW_HEIGHT-xev.xmotion.y;
+                havemotion = 1;
+                break;
+            case ButtonPress:
+                if(havemotion) {
+                    client_motionevent(motionx, motiony);
+                    havemotion = 0;
+                }
+                client_mouseclickevent(xev.xbutton.x, WINDOW_HEIGHT-xev.xbutton.y, xev.xbutton.button);
+                break;
+            case ButtonRelease:
+                if(havemotion) {
+                    client_motionevent(motionx, motiony);
+                    havemotion = 0;
+                }
+                client_mouseunclickevent(xev.xbutton.x, WINDOW_HEIGHT-xev.xbutton.y, xev.xbutton.button);
+                break;
+            case KeyPress:
+                client_keypressevent(xev.xkey.x, WINDOW_HEIGHT-xev.xkey.y, xev.xkey.keycode);
+                return 0;
+        }
+    }
+    if(havemotion) {
+        client_motionevent(motionx, motiony);
+        havemotion = 0;
+    }
+    return 1;
+}
+
+//// EGL support
+//
+// egl provides an interface to connect the graphics related functionality of openGL ES
+// with the windowing interface and functionality of the native operation system (X11
+// in our case.
+void eglinit()
+{
+    egl_display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (egl_display == EGL_NO_DISPLAY) {
+        fputs("Got no EGL display.\n", stderr);
+        return;
+    }
+    if (!eglInitialize(egl_display, NULL, NULL)) {
+        fputs("Unable to initialize EGL\n", stderr);
+        return;
+    }
+
+    EGLint attr[] = { // some attributes to set up our egl-interface
+        EGL_RED_SIZE, 8,
+        EGL_GREEN_SIZE, 8,
+        EGL_BLUE_SIZE, 8,
+        EGL_ALPHA_SIZE, 8,
+        EGL_SURFACE_TYPE,
+        EGL_PIXMAP_BIT | EGL_OPENGL_ES2_BIT,
+        EGL_NONE
+    };
+    EGLint num_config;
+    EGLConfig ecfg;
+
+    if (!eglChooseConfig(egl_display, attr, &ecfg, 1, &num_config)) {
+        fprintf(stderr, "Failed to choose config (eglError: %s)\n", eglGetError());
+        return;
+    }
+    if (num_config != 1) {
+        fprintf(stderr, "Didn't get exactly one config, but %d\n", num_config);
+        return;
+    }
+
+    EGLint rt;
+    EGLint pixel_format = EGL_PIXEL_FORMAT_ARGB_8888_BRCM;
+    eglGetConfigAttrib(egl_display, ecfg, EGL_RENDERABLE_TYPE, &rt);
+    if (rt & EGL_OPENGL_ES_BIT) {
+        pixel_format |= EGL_PIXEL_FORMAT_RENDER_GLES_BRCM;
+        pixel_format |= EGL_PIXEL_FORMAT_GLES_TEXTURE_BRCM;
+    }
+    if (rt & EGL_OPENGL_ES2_BIT) {
+        pixel_format |= EGL_PIXEL_FORMAT_RENDER_GLES2_BRCM;
+        pixel_format |= EGL_PIXEL_FORMAT_GLES2_TEXTURE_BRCM;
+    }
+    if (rt & EGL_OPENVG_BIT) {
+        pixel_format |= EGL_PIXEL_FORMAT_RENDER_VG_BRCM;
+        pixel_format |= EGL_PIXEL_FORMAT_VG_IMAGE_BRCM;
+    }
+    if (rt & EGL_OPENGL_BIT) {
+        pixel_format |= EGL_PIXEL_FORMAT_RENDER_GL_BRCM;
+    }
+
+    EGLint pixmap[5];
+    pixmap[0] = 0;
+    pixmap[1] = 0;
+    pixmap[2] = WINDOW_WIDTH;
+    pixmap[3] = WINDOW_HEIGHT;
+    pixmap[4] = pixel_format;
+    eglCreateGlobalImageBRCM(WINDOW_WIDTH, WINDOW_HEIGHT, pixmap[4], 0, WINDOW_WIDTH*4, pixmap);
+    egl_surface = eglCreatePixmapSurface(egl_display, ecfg, pixmap, 0);
+    if (egl_surface == EGL_NO_SURFACE) {
+        fprintf(stderr, "Unable to create EGL surface (eglError: %s)\n", eglGetError());
+        return;
+    }
+
+    //// egl-contexts collect all state descriptions needed required for operation
+    EGLint ctxattr[] = {
+        EGL_CONTEXT_CLIENT_VERSION, 2,
+        EGL_NONE
+    };
+    egl_context = eglCreateContext(egl_display, ecfg, EGL_NO_CONTEXT, ctxattr);
+    if (egl_context == EGL_NO_CONTEXT) {
+        fprintf(stderr, "Unable to create EGL context (eglError: %s)\n", eglGetError());
+        return;
+    }
+
+    //// associate the egl-context with the egl-surface
+    eglMakeCurrent(egl_display, egl_surface, egl_surface, egl_context);
+}
+
+void eglcleanup()
+{
+    eglDestroyContext(egl_display, egl_context);
+    eglDestroySurface(egl_display, egl_surface);
+    eglTerminate(egl_display);
+}
+
+
+//// support for frames per second display
+
+static struct timeval fpst1, fpst2;
+static int fpsnframes = 0;
+
+void fpsinit()
+{
+    gettimeofday(&fpst1, 0);
+    fpsnframes = 0;
+}
+
+int fpsreport()
+{
+    if((++fpsnframes % 20) == 0)
+        return 1;
+    else
+        return 0;
+}
+
+float fpsget()
+{
+    gettimeofday(&fpst2, 0);
+    float dt = (fpst2.tv_sec-fpst1.tv_sec) + ((fpst2.tv_usec-fpst1.tv_usec)*1e-6);
+    float fps = fpsnframes / dt;
+    fpsnframes = 0;
+    fpst1 = fpst2;
+    return fps;
+}
+
+//// client_ gl code follows
+
+const char vertex_src [] = "    \
+    attribute vec4 position;    \
+    varying mediump vec2 pos;   \
+    uniform vec4 offset;        \
+                                \
+    void main()                 \
+    {                           \
+            gl_Position = position + offset;    \
+            pos = position.xy;                  \
+    }                                           \
 ";
 
-
-const char fragment_src [] =
-" \
-varying mediump vec2 pos; \
-uniform mediump float phase; \
-\
-void main() \
-{ \
-	gl_FragColor = vec4( 1., 0.9, 0.7, 1.0 ) * \
-	cos( 30.*sqrt(pos.x*pos.x + 1.5*pos.y*pos.y) \
-	+ atan(pos.y,pos.x) - phase ); \
-} \
+const char fragment_src [] = "  \
+    varying mediump vec2 pos;   \
+    uniform mediump float phase;\
+                                \
+    void main()                 \
+    {                           \
+            gl_FragColor = vec4(1., 0.9, 0.7, 1.0) *    \
+            cos(30.*sqrt(pos.x*pos.x + 1.5*pos.y*pos.y) \
+            + atan(pos.y,pos.x) - phase);               \
+    }                                                   \
 ";
+
 // some more formulas to play with...
-// cos( 20.*(pos.x*pos.x + pos.y*pos.y) - phase );
-// cos( 20.*sqrt(pos.x*pos.x + pos.y*pos.y) + atan(pos.y,pos.x) - phase );
-// cos( 30.*sqrt(pos.x*pos.x + 1.5*pos.y*pos.y - 1.8*pos.x*pos.y*pos.y)
-// + atan(pos.y,pos.x) - phase );
+// cos(20.*(pos.x*pos.x + pos.y*pos.y) - phase);
+// cos(20.*sqrt(pos.x*pos.x + pos.y*pos.y) + atan(pos.y,pos.x) - phase);
+// cos(30.*sqrt(pos.x*pos.x + 1.5*pos.y*pos.y - 1.8*pos.x*pos.y*pos.y)
+// + atan(pos.y,pos.x) - phase);
 
-
-// handle to the shader
-void
-print_shader_info_log (GLuint shader)
+void print_shader_info_log(GLuint shader)
 {
-	GLint length;
-
-	glGetShaderiv ( shader , GL_INFO_LOG_LENGTH , &length );
-
-	if ( length ) {
-		char* buffer = malloc(sizeof(char) * length);
-		glGetShaderInfoLog(shader, length, NULL, buffer);
-		printf("shader info: %s\n");
-		fflush(NULL);
-		free(buffer);
-
-		GLint success;
-		glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
-		if (success != GL_TRUE) exit (1);
-	}
+    GLint length;
+    glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &length);
+    if (length) {
+        char* buffer = malloc(sizeof(char) * length);
+        glGetShaderInfoLog(shader, length, NULL, buffer);
+        printf("shader info: %s\n",buffer);
+        fflush(NULL);
+        free(buffer);
+        GLint success;
+        glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
+        if (success != GL_TRUE) exit (1);
+    }
 }
 
-
-GLuint
-load_shader(const char *shader_source, GLenum type)
+GLuint load_shader(const char *shader_source, GLenum type)
 {
-	GLuint shader = glCreateShader(type);
-
-	glShaderSource(shader, 1 ,&shader_source , NULL);
-	glCompileShader(shader);
-
-	print_shader_info_log(shader);
-
-	return shader;
+    GLuint shader = glCreateShader(type);
+    glShaderSource(shader, 1 ,&shader_source , NULL);
+    glCompileShader(shader);
+    print_shader_info_log(shader);
+    return shader;
 }
 
-
-Display *x_display;
-Window win;
-EGLDisplay egl_display;
-EGLContext egl_context;
-
-GLfloat
-norm_x = 0.0,
-norm_y = 0.0,
-offset_x = 0.0,
-offset_y = 0.0,
-p1_pos_x = 0.0,
-p1_pos_y = 0.0;
-
-GLint
-phase_loc,
-offset_loc,
-position_loc;
-
-
-EGLSurface egl_surface;
-bool update_pos = false;
+GLfloat norm_x = 0.0, norm_y = 0.0;
+GLfloat offset_x = 0.0, offset_y = 0.0;
+GLfloat p1_pos_x = 0.0, p1_pos_y = 0.0;
+GLint phase_loc, offset_loc, position_loc;
 
 const float vertexArray[] = {
-	0.0, 0.5, 0.0,
-	-0.5, 0.0, 0.0,
-	0.0, -0.5, 0.0,
-	0.5, 0.0, 0.0,
-	0.0, 0.5, 0.0 
+        0.0, 0.5, 0.0,
+        -0.5, 0.0, 0.0,
+        0.0, -0.5, 0.0,
+        0.5, 0.0, 0.0,
+        0.0, 0.5, 0.0 
 };
 
+//// User application 
 
-void render()
+void client_glinit()
 {
-	static float phase = 0;
-	static int donesetup = 0;
+    GLuint vertexShader = load_shader(vertex_src , GL_VERTEX_SHADER); // load vertex shader
+    GLuint fragmentShader = load_shader(fragment_src , GL_FRAGMENT_SHADER); // load fragment shader
 
-	static XWindowAttributes gwa;
-	static XImage *image = 0;
-	static GC gc; 
-	static Pixmap pixmap;
-	//// draw
+    GLuint shaderProgram = glCreateProgram(); // create program object
+    glAttachShader(shaderProgram, vertexShader); // and attach both...
+    glAttachShader(shaderProgram, fragmentShader); // ... shaders to it
 
-	if (!donesetup) {
-		XGetWindowAttributes(x_display, win ,&gwa);
-		glViewport(0 ,0 , gwa.width, gwa.height);
-		glClearColor(0.08, 0.06, 0.07, 1.0); // background color
-		donesetup = 1;
+    glLinkProgram(shaderProgram); // link the program
+    glUseProgram(shaderProgram); // and select it for usage
 
-		//gc = XCreateGC(x_display, win, 0, 0);
-		//printf("d %d, w %d\n", x_display, win);
-		//printf("w %d, h %d\n", gwa.width, gwa.height);
-		image = XGetImage(x_display, win, 0, 0, gwa.width, gwa.height, AllPlanes, ZPixmap);
-		//pixmap	= XCreatePixmap(x_display, win, gwa.width, gwa.height, 16);
-		gc = DefaultGC(x_display, 0);
-	}
-	glClear (GL_COLOR_BUFFER_BIT);
-
-	// memset((void*)(&(image->data[0])), 0, gwa.width * gwa.height);
-
-	glUniform1f(phase_loc, phase); // write the value of phase to the shaders phase
-	phase = fmodf( phase + 0.5f, 2.f * 3.141f); // and update the local variable
-
-	if (update_pos) { // if the position of the texture has changed due to user action
-		GLfloat old_offset_x = offset_x;
-		GLfloat old_offset_y = offset_y;
-
-		offset_x = norm_x - p1_pos_x;
-		offset_y = norm_y - p1_pos_y;
-
-		p1_pos_x = norm_x;
-		p1_pos_y = norm_y;
-
-		offset_x += old_offset_x;
-		offset_y += old_offset_y;
-
-		update_pos = false;
-	}
-
-	glUniform4f(offset_loc, offset_x, offset_y, 0.0, 0.0 );
-
-	glVertexAttribPointer(position_loc, 3, GL_FLOAT, false, 0, vertexArray);
-	glEnableVertexAttribArray(position_loc);
-	glDrawArrays(GL_TRIANGLE_STRIP, 0, 5);
-
-	glFinish();
-	unsigned int *buffer = (unsigned int *)malloc(gwa.height * gwa.width * 4);
-	glReadPixels(0, 0, gwa.width, gwa.height, GL_RGBA, GL_UNSIGNED_BYTE, buffer);
-
-	int count;
-	for (count = 0; count < gwa.width * gwa.height / 2; count++)
-	{
-		unsigned int *dest = (unsigned int*)(&(image->data[0]));
-		unsigned int src0 = buffer[count * 2];
-		unsigned int src1 = buffer[count * 2 + 1];
-
-		unsigned char r0, g0, b0;
-		unsigned char r1, g1, b1;
-
-		r0 = src0 & 0xff;
-		g0 = (src0 >> 8) & 0xff;
-		b0 = (src0 >> 16) & 0xff;
-		r1 = src1 & 0xff;
-		g1 = (src1 >> 8) & 0xff;
-		b1 = (src1 >> 16) & 0xff;
-		dest[count] = ((r0 >> 3) << 27) | ((g0 >> 2) << 21) | ((b0 >> 3) << 16)
-		| ((r1 >> 3) << 11) | ((g1 >> 2) << 5) | ((b1 >> 3) << 0);
-	}
-
-
-	free(buffer);
-	// eglSwapBuffers ( egl_display, egl_surface ); // get the rendered buffer to the screen
-	XPutImage(x_display, win, gc, image, 0, 0, 0, 0, gwa.width, gwa.height);
+    // now get the locations (kind of handle) of the shaders variables
+    position_loc = glGetAttribLocation(shaderProgram, "position");
+    phase_loc = glGetUniformLocation(shaderProgram , "phase");
+    offset_loc = glGetUniformLocation(shaderProgram , "offset");
+    if (position_loc < 0 || phase_loc < 0 || offset_loc < 0) {
+        fputs("Unable to get uniform location\n", stderr);
+        return;
+    }
 }
 
+void client_render()
+{
+    static float phase = 0;
 
-////////////////////////////////////////////////////////////////////////////////////////////
+    glViewport(0 ,0 , Xgwa.width, Xgwa.height);
+    glClearColor(0.08, 0.06, 0.07, 1.0);
+    glClear(GL_COLOR_BUFFER_BIT);
 
+    glUniform1f(phase_loc, phase); // write the value of phase to the shaders phase
+    phase = fmodf(phase + 0.5f, 2.f * 3.141f); // and update the local variable
+
+    GLfloat old_offset_x = offset_x;
+    GLfloat old_offset_y = offset_y;
+    offset_x = norm_x - p1_pos_x;
+    offset_y = norm_y - p1_pos_y;
+    p1_pos_x = norm_x;
+    p1_pos_y = norm_y;
+    offset_x += old_offset_x;
+    offset_y += old_offset_y;
+
+    glUniform4f(offset_loc, offset_x, offset_y, 0.0, 0.0);
+    glVertexAttribPointer(position_loc, 3, GL_FLOAT, false, 0, vertexArray);
+    glEnableVertexAttribArray(position_loc);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 5);
+}
+
+void client_motionevent(int posx, int posy)
+{
+    norm_x = (2.0*posx                /(float)WINDOW_WIDTH)-1.0;
+    norm_y = (2.0*(WINDOW_HEIGHT-posy)/(float)WINDOW_HEIGHT)-1.0;
+}
+
+void client_mouseclickevent(int posx, int posy, int button)
+{
+    fprintf(stderr,"mouse click at %d %d but: %d\n", posx, posy, button);
+}
+
+void client_mouseunclickevent(int posx, int posy, int button)
+{
+    fprintf(stderr,"mouse unclick at %d %d but: %d\n", posx, posy, button);
+}
+
+void client_keypressevent(int posx, int posy, int key)
+{
+    fprintf(stderr,"key press at %d %d key: %d\n", posx, posy, key);
+}
+
+void client_expose()
+{
+    fprintf(stderr,"window expose\n");
+}
+
+//// generic main
 
 int main()
 {
-	/////// the X11 part //////////////////////////////////////////////////////////////////
-	// in the first part the program opens a connection to the X11 window manager
-	//
+    bcm_host_init();
+    xwindowsinit();
+    eglinit();
 
-	bcm_host_init();
+    fprintf(stderr,"Note: Press any key to quit\n");
+    fprintf(stderr,"Control-C will not free all graphics resourses\n");
+    fprintf(stderr,"\n");
 
-	x_display = XOpenDisplay(NULL); // open the standard display (the primary screen)
-	if (x_display == NULL) {
-		fputs("cannot connect to X server\n", stderr);
-		return 1;
-	}
+    client_glinit();
 
-	Window root = DefaultRootWindow(x_display); // get the root window (usually the whole screen)
+    while(xgetevents()) { // the main loop
 
-	XSetWindowAttributes swa;
-	swa.event_mask = ExposureMask | PointerMotionMask | KeyPressMask;
+        client_render();
 
-	const int width = 800;
-	const int height = 480;
-	// create a window with the provided parameters
-	win = XCreateWindow (x_display, root, 0, 0, width, height, 0, CopyFromParent, InputOutput,
-				CopyFromParent, CWEventMask, &swa );
+        xdisplayGLbuffer();
 
-	/* XSetWindowAttributes xattr;
-	Atom atom;
-	int one = 1;
+        if (fpsreport())
+            printf("fps: %f\n", fpsget());
+    }
 
-	xattr.override_redirect = False;
-	XChangeWindowAttributes ( x_display, win, CWOverrideRedirect, &xattr );
+    eglcleanup();       // should do this on Control-C also
+    xwindowscleanup();
+    bcm_host_deinit();
 
-	atom = XInternAtom ( x_display, "_NET_WM_STATE_FULLSCREEN", True );
-	XChangeProperty (
-	x_display, win,
-	XInternAtom ( x_display, "_NET_WM_STATE", True ),
-	XA_ATOM, 32, PropModeReplace,
-	(unsigned char*) &atom, 1 );
-
-	XChangeProperty (
-	x_display, win,
-	XInternAtom ( x_display, "_HILDON_NON_COMPOSITED_WINDOW", True ),
-	XA_INTEGER, 32, PropModeReplace,
-	(unsigned char*) &one, 1);
-
-	XWMHints hints;
-	hints.input = True;
-	hints.flags = InputHint;
-	XSetWMHints(x_display, win, &hints);*/
-
-	XMapWindow (x_display, win ); // make the window visible on the screen
-	XStoreName (x_display, win, "GL test" ); // give the window a name
-	/*
-	//// get identifiers for the provided atom name strings
-	Atom wm_state = XInternAtom ( x_display, "_NET_WM_STATE", False );
-	Atom fullscreen = XInternAtom ( x_display, "_NET_WM_STATE_FULLSCREEN", False );
-
-	XEvent xev;
-	memset ( &xev, 0, sizeof(xev) );
-
-	xev.type = ClientMessage;
-	xev.xclient.window = win;
-	xev.xclient.message_type = wm_state;
-	xev.xclient.format = 32;
-	xev.xclient.data.l[0] = 1;
-	xev.xclient.data.l[1] = fullscreen;
-	XSendEvent ( // send an event mask to the X-server
-	x_display,
-	DefaultRootWindow ( x_display ),
-	False,
-	SubstructureNotifyMask,
-	&xev );*/
-
-
-	/////// the egl part //////////////////////////////////////////////////////////////////
-	// egl provides an interface to connect the graphics related functionality of openGL ES
-	// with the windowing interface and functionality of the native operation system (X11
-	// in our case.
-
-	//egl_display = eglGetDisplay( (EGLNativeDisplayType) x_display );
-	egl_display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-	if (egl_display == EGL_NO_DISPLAY) {
-		fputs("Got no EGL display.\n", stderr);
-		return 1;
-	}
-
-	if (!eglInitialize( egl_display, NULL, NULL )) {
-		fputs("Unable to initialize EGL\n", stderr);
-		return 1;
-	}
-
-	EGLint attr[] = { // some attributes to set up our egl-interface
-		EGL_RED_SIZE, 8,
-		EGL_GREEN_SIZE, 8,
-		EGL_BLUE_SIZE, 8,
-		EGL_ALPHA_SIZE, 8,
-		EGL_SURFACE_TYPE,
-		EGL_PIXMAP_BIT | EGL_OPENGL_ES2_BIT,
-		EGL_NONE
-	};
-
-	EGLConfig ecfg;
-	EGLint num_config;
-	if (!eglChooseConfig(egl_display, attr, &ecfg, 1, &num_config)) {
-		fprintf(stderr, "Failed to choose config (eglError: %s)\n");
-		return 1;
-	}
-
-	if (num_config != 1) {
-		fprintf(stderr, "Didn't get exactly one config, but %d\n", num_config);
-		return 1;
-	}
-
-	//egl_surface = eglCreateWindowSurface ( egl_display, ecfg, win, NULL );
-
-	EGLint pixel_format = EGL_PIXEL_FORMAT_ARGB_8888_BRCM;
-	//EGLint pixel_format = EGL_PIXEL_FORMAT_RGB_565_BRCM;
-	EGLint rt;
-	eglGetConfigAttrib(egl_display, ecfg, EGL_RENDERABLE_TYPE, &rt);
-
-	if (rt & EGL_OPENGL_ES_BIT) {
-		pixel_format |= EGL_PIXEL_FORMAT_RENDER_GLES_BRCM;
-		pixel_format |= EGL_PIXEL_FORMAT_GLES_TEXTURE_BRCM;
-	}
-	if (rt & EGL_OPENGL_ES2_BIT) {
-		pixel_format |= EGL_PIXEL_FORMAT_RENDER_GLES2_BRCM;
-		pixel_format |= EGL_PIXEL_FORMAT_GLES2_TEXTURE_BRCM;
-	}
-	if (rt & EGL_OPENVG_BIT) {
-		pixel_format |= EGL_PIXEL_FORMAT_RENDER_VG_BRCM;
-		pixel_format |= EGL_PIXEL_FORMAT_VG_IMAGE_BRCM;
-	}
-	if (rt & EGL_OPENGL_BIT) {
-		pixel_format |= EGL_PIXEL_FORMAT_RENDER_GL_BRCM;
-	}
-
-	EGLint pixmap[5];
-	pixmap[0] = 0;
-	pixmap[1] = 0;
-	pixmap[2] = width;
-	pixmap[3] = height;
-	pixmap[4] = pixel_format;
-
-	eglCreateGlobalImageBRCM(width, height, pixmap[4], 0, width*4, pixmap);
-
-	egl_surface = eglCreatePixmapSurface(egl_display, ecfg, pixmap, 0);
-	if ( egl_surface == EGL_NO_SURFACE ) {
-		fprintf(stderr, "Unable to create EGL surface (eglError: %s)\n", eglGetError());
-		return 1;
-	}
-
-	//// egl-contexts collect all state descriptions needed required for operation
-	EGLint ctxattr[] = {
-		EGL_CONTEXT_CLIENT_VERSION, 2,
-		EGL_NONE
-	};
-	egl_context = eglCreateContext ( egl_display, ecfg, EGL_NO_CONTEXT, ctxattr );
-	if ( egl_context == EGL_NO_CONTEXT ) {
-		fprintf(stderr, "Unable to create EGL context (eglError: %s)\n", eglGetError());
-		return 1;
-	}
-
-	//// associate the egl-context with the egl-surface
-	eglMakeCurrent(egl_display, egl_surface, egl_surface, egl_context);
-
-
-	/////// the openGL part ///////////////////////////////////////////////////////////////
-
-	GLuint vertexShader = load_shader(vertex_src , GL_VERTEX_SHADER); // load vertex shader
-	GLuint fragmentShader = load_shader(fragment_src , GL_FRAGMENT_SHADER); // load fragment shader
-
-	GLuint shaderProgram = glCreateProgram (); // create program object
-	glAttachShader(shaderProgram, vertexShader); // and attach both...
-	glAttachShader(shaderProgram, fragmentShader); // ... shaders to it
-
-	glLinkProgram(shaderProgram); // link the program
-	glUseProgram(shaderProgram); // and select it for usage
-
-	//// now get the locations (kind of handle) of the shaders variables
-	position_loc = glGetAttribLocation(shaderProgram, "position");
-	phase_loc = glGetUniformLocation(shaderProgram , "phase");
-	offset_loc = glGetUniformLocation(shaderProgram , "offset");
-	if (position_loc < 0 || phase_loc < 0 || offset_loc < 0) {
-		fputs("Unable to get uniform location\n", stderr);
-		return 1;
-	}
-
-
-	const float
-	window_width = 800.0,
-	window_height = 480.0;
-
-	//// this is needed for time measuring --> frames per second
-	struct timezone tz;
-	struct timeval t1, t2;
-	gettimeofday(&t1, &tz);
-	int num_frames = 0;
-
-	XWindowAttributes gwa;
-	XGetWindowAttributes(x_display, win, &gwa);
-
-	bool quit = false;
-	while (!quit) { // the main loop
-
-		while (XPending(x_display)) { // check for events from the x-server
-
-			XEvent xev;
-			XNextEvent(x_display, &xev);
-
-			if (xev.type == MotionNotify) { // if mouse has moved
-				// cout << "move to: << xev.xmotion.x << "," << xev.xmotion.y << endl;
-				GLfloat window_y = (xev.xmotion.y) - window_height / 2.0;
-				norm_y = window_y / (window_height / 2.0);
-				GLfloat window_x = xev.xmotion.x - window_width / 2.0;
-				norm_x = window_x / (window_width / 2.0);
-				update_pos = true;
-			}
-
-			if (xev.type == KeyPress) quit = true;
-		}
-
-		render(); // now we finally put something on the screen
-
-		if (++num_frames % 100 == 0) {
-			gettimeofday( &t2, &tz );
-			float dt = t2.tv_sec - t1.tv_sec + (t2.tv_usec - t1.tv_usec) * 1e-6;
-			printf("fps: %d\n", num_frames / dt);
-			num_frames = 0;
-			t1 = t2;
-		}
-		// usleep( 1000*10 );
-	}
-
-
-	//// cleaning up...
-	eglDestroyContext(egl_display, egl_context);
-	eglDestroySurface(egl_display, egl_surface);
-	eglTerminate(egl_display);
-	XDestroyWindow(x_display, win);
-	XCloseDisplay(x_display);
-
-	return 0;
+    return 0;
 }
