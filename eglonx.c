@@ -2,7 +2,7 @@
 //  Created by exoticorn (http://talk.maemo.org/showthread.php?t=37356)
 //  edited and commented by André Bergner [endboss]
 //
-//  libraries needed: -lEGL -lGLESv2 -lbcm_host -lX11
+//  libraries needed: -lEGL -lGLESv2 -lX11
 //
 //
 #include <stdio.h>
@@ -17,7 +17,13 @@
 #include <GLES2/gl2.h>
 #include <EGL/egl.h>
 #include <EGL/eglext_brcm.h>
-#include <bcm_host.h>
+
+typedef struct Rect {
+    float orgx;
+    float orgy;
+    float sizex;
+    float sizey;
+} Rect;
 
 //// initial window size
 #define WINDOW_WIDTH    (800)
@@ -29,6 +35,7 @@ static Window Xwin;
 static XWindowAttributes Xgwa;
 static GC Xgc; 
 static XImage *Ximage = 0;
+static Rect Xwindowrect;
 
 //// EGL globals
 static EGLDisplay egl_display;
@@ -60,6 +67,72 @@ void signalinit()
     signal(SIGQUIT, sighandler);
 }
 
+
+//// Rect support
+
+#define RectGetMinX(r) ((r).orgx)
+#define RectGetMinY(r) ((r).orgy)
+#define RectGetMaxX(r) ((r).orgx + (r).sizex)
+#define RectGetMaxY(r) ((r).orgy + (r).sizey)
+#define MIN(a, b)       (((a) < (b)) ? (a) : (b))
+#define MAX(a, b)       (((a) > (b)) ? (a) : (b))
+
+Rect RectMake(float ox, float oy, float width, float height)
+{
+    Rect r;
+
+    r.orgx = ox;
+    r.orgy = oy;
+    r.sizex = width;
+    r.sizey = height;
+    return r;
+}
+
+Rect RectNull()
+{
+    return RectMake(-1000, -1000, -1000, -1000);
+}
+
+int RectIsNull(Rect r)
+{
+    if(r.orgx != -1000)
+        return 0;
+    if(r.orgy != -1000)
+        return 0;
+    if(r.sizex != -1000)
+        return 0;
+    if(r.sizey != -1000)
+        return 0;
+    return 1;
+}
+
+Rect RectIntersection(Rect a, Rect b)
+{
+    float minx, maxx, miny, maxy;
+
+    if(RectIsNull(a)) return RectNull();
+    if(RectIsNull(b)) return RectNull();
+    if(RectGetMinX(a) > RectGetMaxX(b)) return RectNull();
+    if(RectGetMinY(a) > RectGetMaxY(b)) return RectNull();
+    if(RectGetMinX(b) > RectGetMaxX(a)) return RectNull();
+    if(RectGetMinY(b) > RectGetMaxY(a)) return RectNull();
+    minx = MAX(RectGetMinX(a),RectGetMinX(b));
+    maxx = MIN(RectGetMaxX(a),RectGetMaxX(b));
+    miny = MAX(RectGetMinY(a),RectGetMinY(b));
+    maxy = MIN(RectGetMaxY(a),RectGetMaxY(b));
+    return RectMake(minx, miny, maxx-minx, maxy-miny);
+}
+
+Rect RectEvenWidth(Rect r)
+{
+    int sizex = r.sizex;
+    if(sizex & 1) {
+        if(r.orgx>0.0)
+            r.orgx -= 1.0;
+        r.sizex += 1.0;
+    }
+    return r;
+}
 
 //// X window support 
 
@@ -105,7 +178,7 @@ void xwindowsinit()
                 DefaultVisual(Xdsp, DefaultScreen(Xdsp)),
                 DefaultDepth(Xdsp, DefaultScreen(Xdsp)),
                 ZPixmap, 0, buf, Xgwa.width, Xgwa.height, 16, 0);
-
+    Xwindowrect = RectMake(0,0,Xgwa.width,Xgwa.height);
 }
 
 void xwindowscleanup()
@@ -114,12 +187,25 @@ void xwindowscleanup()
     XCloseDisplay(Xdsp);
 }
 
-void xdisplayGLbuffer()
+void xdisplayGLbuffer(Rect copyrect)	// copy this rectangleto the X window
 {
     static unsigned int *pixbuffer;
     static int pixbufferbytes;
+    int orgx, orgy, sizex, sizey;
+    int winsizex, winsizey;
 
-    int nbytes = Xgwa.height * Xgwa.width * 4;
+    copyrect = RectIntersection(Xwindowrect, copyrect);
+    if(RectIsNull(copyrect))
+	return;
+    copyrect = RectEvenWidth(copyrect);	// force copy rect to be even
+    winsizex = Xwindowrect.sizex;
+    winsizey = Xwindowrect.sizey;
+    if(winsizex & 1) {
+	fprintf(stderr, "Error: window size x must be even\n");
+	return;
+    }
+
+    int nbytes = winsizex * winsizey * 4;
     if(pixbufferbytes != nbytes) {
         if(pixbuffer)
             free(pixbuffer);
@@ -127,24 +213,32 @@ void xdisplayGLbuffer()
         pixbufferbytes = nbytes;
     }
     glFinish();
-    glReadPixels(0, 0, Xgwa.width, Xgwa.height, GL_RGBA, GL_UNSIGNED_BYTE, pixbuffer);
-
-    int count = (Xgwa.width*Xgwa.height/2);
-    unsigned int *dest = (unsigned int*)(&(Ximage->data[0]));
+    glReadPixels(copyrect.orgx, copyrect.orgy, copyrect.sizex, copyrect.sizey, 
+						GL_RGBA, GL_UNSIGNED_BYTE, pixbuffer);
     unsigned int *pixptr = pixbuffer;
-    while (count--) {
-        unsigned int src0 = pixptr[0];
-        unsigned int src1 = pixptr[1];
-        pixptr += 2;
+    int count, x, y;
+    for(y=0; y<copyrect.sizey; y++) {
+        int srcy = copyrect.sizey-1-y;		// flip y for X windows
+        unsigned int *dest = ((unsigned int*)(&(Ximage->data[0])))+(srcy*(winsizex/2));
+        count = copyrect.sizex/2;
+        while(count--) {
+            unsigned int src0 = pixptr[0];
+            unsigned int src1 = pixptr[1];
+            pixptr += 2;
 
-        *dest++ = ((src1 & 0xf8)      <<24) |
-                  ((src1 & (0xfc<< 8))<<11) |
-                  ((src1 & (0xf8<<16))>> 3) |
-                  ((src0 & 0xf8)      << 8) |
-                  ((src0 & (0xfc<< 8))>> 5) |
-                  ((src0 & (0xf8<<16))>>19);
+            *dest++ = ((src1 & 0xf8)      <<24) |
+                      ((src1 & (0xfc<< 8))<<11) |
+                      ((src1 & (0xf8<<16))>> 3) |
+                      ((src0 & 0xf8)      << 8) |
+                      ((src0 & (0xfc<< 8))>> 5) |
+                      ((src0 & (0xf8<<16))>>19);
+        }
     }
-    XPutImage(Xdsp, Xwin, Xgc, Ximage, 0, 0, 0, 0, Xgwa.width, Xgwa.height);
+    orgx = copyrect.orgx;
+    orgy = winsizey-(copyrect.orgy+copyrect.sizey);
+    sizex = copyrect.sizex;
+    sizey = copyrect.sizey;
+    XPutImage(Xdsp, Xwin, Xgc, Ximage, 0, 0, orgx, orgy, sizex, sizey);
 }
 
 int xgetevents()
@@ -442,8 +536,8 @@ static int mousedown = 0;
 void client_motionevent(int posx, int posy)
 {
     if(mousedown) {
-        norm_x = (2.0*posx                /(float)WINDOW_WIDTH)-1.0;
-        norm_y = (2.0*(WINDOW_HEIGHT-posy)/(float)WINDOW_HEIGHT)-1.0;
+        norm_x = (2.0*posx/(float)WINDOW_WIDTH)-1.0;
+        norm_y = (2.0*posy/(float)WINDOW_HEIGHT)-1.0;
     }
 }
 
@@ -474,7 +568,6 @@ void client_exposeevent()
 int main()
 {
     signalinit();
-    bcm_host_init();
     xwindowsinit();
     eglinit();
 
@@ -485,7 +578,7 @@ int main()
 
         client_render();
 
-        xdisplayGLbuffer();
+        xdisplayGLbuffer(Xwindowrect);
 
         if (fpsreport())
             fprintf(stderr, "fps: %f\n", fpsget());
@@ -493,6 +586,5 @@ int main()
 
     eglcleanup();
     xwindowscleanup();
-    bcm_host_deinit();
     return 0;
 }
