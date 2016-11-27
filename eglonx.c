@@ -155,7 +155,6 @@ void xwindowsinit()
         return;
     }
     Window root = DefaultRootWindow(Xdsp);
-
     XSetWindowAttributes swa;
     swa.event_mask = ExposureMask | 
                      KeyPressMask | 
@@ -173,11 +172,11 @@ void xwindowsinit()
     //// create an X image for drawing to the screen
     Xgc = DefaultGC(Xdsp, 0);
     XGetWindowAttributes(Xdsp, Xwin, &Xgwa);
-    char *buf = (char *)malloc(Xgwa.width*Xgwa.height*2);
+    char *buf = (char *)malloc(Xgwa.width*Xgwa.height*4);
     Ximage = XCreateImage(Xdsp, 
                 DefaultVisual(Xdsp, DefaultScreen(Xdsp)),
                 DefaultDepth(Xdsp, DefaultScreen(Xdsp)),
-                ZPixmap, 0, buf, Xgwa.width, Xgwa.height, 16, 0);
+                ZPixmap, 0, buf, Xgwa.width, Xgwa.height, 32, 0);
     Xwindowrect = RectMake(0,0,Xgwa.width,Xgwa.height);
 }
 
@@ -215,25 +214,16 @@ void xdisplayGLbuffer(Rect copyrect)	// copy this rectangleto the X window
     glFinish();
     glReadPixels(copyrect.orgx, copyrect.orgy, copyrect.sizex, copyrect.sizey, 
 						GL_RGBA, GL_UNSIGNED_BYTE, pixbuffer);
+    int y;
     unsigned int *pixptr = pixbuffer;
-    int count, x, y;
     for(y=0; y<copyrect.sizey; y++) {
-        int srcy = copyrect.sizey-1-y;		// flip y for X windows
-        unsigned int *dest = ((unsigned int*)(&(Ximage->data[0])))+(srcy*(winsizex/2));
-        count = copyrect.sizex/2;
-        while(count--) {
-            unsigned int src0 = pixptr[0];
-            unsigned int src1 = pixptr[1];
-            pixptr += 2;
-
-            *dest++ = ((src1 & 0xf8)      <<24) |
-                      ((src1 & (0xfc<< 8))<<11) |
-                      ((src1 & (0xf8<<16))>> 3) |
-                      ((src0 & 0xf8)      << 8) |
-                      ((src0 & (0xfc<< 8))>> 5) |
-                      ((src0 & (0xf8<<16))>>19);
-        }
+	int dsty = copyrect.sizey-1-y;          // flip y for X windows
+        unsigned int *dest = (unsigned int *)(&(Ximage->data[0]));
+	dest = dest + (dsty*winsizex);
+	bcopy(pixptr, dest, copyrect.sizex*sizeof(unsigned int));
+	pixptr += (int)copyrect.sizex;
     }
+
     orgx = copyrect.orgx;
     orgy = winsizey-(copyrect.orgy+copyrect.sizey);
     sizex = copyrect.sizex;
@@ -297,11 +287,11 @@ void eglinit()
     egl_display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     if (egl_display == EGL_NO_DISPLAY) {
         fputs("Got no EGL display.\n", stderr);
-        return;
+	exit(1);
     }
     if (!eglInitialize(egl_display, NULL, NULL)) {
         fputs("Unable to initialize EGL\n", stderr);
-        return;
+	exit(1);
     }
 
     EGLint attr[] = { // some attributes to set up our egl-interface
@@ -318,11 +308,11 @@ void eglinit()
 
     if (!eglChooseConfig(egl_display, attr, &ecfg, 1, &num_config)) {
         fprintf(stderr, "Failed to choose config (eglError: %s)\n", eglGetError());
-        return;
+	exit(1);
     }
     if (num_config != 1) {
         fprintf(stderr, "Didn't get exactly one config, but %d\n", num_config);
-        return;
+	exit(1);
     }
 
     EGLint rt;
@@ -353,8 +343,8 @@ void eglinit()
     eglCreateGlobalImageBRCM(WINDOW_WIDTH, WINDOW_HEIGHT, pixmap[4], 0, WINDOW_WIDTH*4, pixmap);
     egl_surface = eglCreatePixmapSurface(egl_display, ecfg, pixmap, 0);
     if (egl_surface == EGL_NO_SURFACE) {
-        fprintf(stderr, "Unable to create EGL surface (eglError: %s)\n", eglGetError());
-        return;
+        fprintf(stderr, "Unable to create EGL surface (eglError: %d)\n", eglGetError());
+	exit(1);
     }
 
     //// egl-contexts collect all state descriptions needed required for operation
@@ -365,7 +355,7 @@ void eglinit()
     egl_context = eglCreateContext(egl_display, ecfg, EGL_NO_CONTEXT, ctxattr);
     if (egl_context == EGL_NO_CONTEXT) {
         fprintf(stderr, "Unable to create EGL context (eglError: %s)\n", eglGetError());
-        return;
+	exit(1);
     }
 
     //// associate the egl-context with the egl-surface
@@ -452,7 +442,6 @@ void print_shader_info_log(GLuint shader)
     if (length) {
         char* buffer = malloc(sizeof(char) * length);
         glGetShaderInfoLog(shader, length, NULL, buffer);
-        //fprintf(stderr, "shader info: %s\n",buffer);
         fflush(NULL);
         free(buffer);
         GLint success;
@@ -575,15 +564,11 @@ int main()
     fprintf(stderr,"\n");
     client_glinit();
     while(sigkeeprunning & xgetevents()) { // the main loop
-
         client_render();
-
         xdisplayGLbuffer(Xwindowrect);
-
         if (fpsreport())
             fprintf(stderr, "fps: %f\n", fpsget());
     }
-
     eglcleanup();
     xwindowscleanup();
     return 0;

@@ -1,3 +1,9 @@
+Raspberry Pi EGL on X: Update 27 Nov 2016
+----------------------------------------
+
+Made it work on Raspberry PI 3 Model B
+
+
 Raspberry Pi EGL on X: Update 10 Apr 2013
 ----------------------------------------
 
