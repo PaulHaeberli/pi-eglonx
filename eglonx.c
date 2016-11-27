@@ -186,6 +186,25 @@ void xwindowscleanup()
     XCloseDisplay(Xdsp);
 }
 
+#define SHIFTGL_R   	(24)
+#define SHIFTGL_G       (16)
+#define SHIFTGL_B       ( 8)
+#define SHIFTGL_A       ( 0)
+
+#define RVALGL(l) 	((int)(((l)>>SHIFTGL_R)&0xff))
+#define GVALGL(l)       ((int)(((l)>>SHIFTGL_G)&0xff))
+#define BVALGL(l)       ((int)(((l)>>SHIFTGL_B)&0xff))
+#define AVALGL(l)       ((int)(((l)>>SHIFTGL_A)&0xff))
+
+#define CPACKGL(r,g,b,a)  (((r)<<SHIFTGL_R) | ((g)<<SHIFTGL_G) | ((b)<<SHIFTGL_B) | ((a)<<SHIFTGL_A))
+
+#define SHIFTX_B         ( 0)
+#define SHIFTX_G         ( 8)
+#define SHIFTX_R         (16)
+#define SHIFTX_A         (24)
+
+#define CPACKX(r,g,b,a)  (((r)<<SHIFTX_R) | ((g)<<SHIFTX_G) | ((b)<<SHIFTX_B) | ((a)<<SHIFTX_A))
+
 void xdisplayGLbuffer(Rect copyrect)	// copy this rectangleto the X window
 {
     static unsigned int *pixbuffer;
@@ -218,10 +237,13 @@ void xdisplayGLbuffer(Rect copyrect)	// copy this rectangleto the X window
     unsigned int *pixptr = pixbuffer;
     for(y=0; y<copyrect.sizey; y++) {
 	int dsty = copyrect.sizey-1-y;          // flip y for X windows
-        unsigned int *dest = (unsigned int *)(&(Ximage->data[0]));
-	dest = dest + (dsty*winsizex);
-	bcopy(pixptr, dest, copyrect.sizex*sizeof(unsigned int));
-	pixptr += (int)copyrect.sizex;
+        unsigned int *dptr = (unsigned int *)(&(Ximage->data[0]));
+	dptr = dptr + (dsty*winsizex);
+	int x = copyrect.sizex;
+        while(x--) {
+	    int p = *pixptr++;
+	    *dptr++ = CPACKX(RVALGL(p), GVALGL(p), BVALGL(p), 0);
+        }
     }
 
     orgx = copyrect.orgx;
