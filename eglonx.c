@@ -186,12 +186,12 @@ void xwindowscleanup()
     XCloseDisplay(Xdsp);
 }
 
-#define SHIFTGL_R   	(24)
+#define SHIFTGL_R       (24)
 #define SHIFTGL_G       (16)
 #define SHIFTGL_B       ( 8)
 #define SHIFTGL_A       ( 0)
 
-#define RVALGL(l) 	((int)(((l)>>SHIFTGL_R)&0xff))
+#define RVALGL(l)       ((int)(((l)>>SHIFTGL_R)&0xff))
 #define GVALGL(l)       ((int)(((l)>>SHIFTGL_G)&0xff))
 #define BVALGL(l)       ((int)(((l)>>SHIFTGL_B)&0xff))
 #define AVALGL(l)       ((int)(((l)>>SHIFTGL_A)&0xff))
@@ -205,7 +205,7 @@ void xwindowscleanup()
 
 #define CPACKX(r,g,b,a)  (((r)<<SHIFTX_R) | ((g)<<SHIFTX_G) | ((b)<<SHIFTX_B) | ((a)<<SHIFTX_A))
 
-void xdisplayGLbuffer(Rect copyrect)	// copy this rectangleto the X window
+void xdisplayGLbuffer(Rect copyrect)    // copy this rectangleto the X window
 {
     static unsigned int *pixbuffer;
     static int pixbufferbytes;
@@ -214,13 +214,13 @@ void xdisplayGLbuffer(Rect copyrect)	// copy this rectangleto the X window
 
     copyrect = RectIntersection(Xwindowrect, copyrect);
     if(RectIsNull(copyrect))
-	return;
-    copyrect = RectEvenWidth(copyrect);	// force copy rect to be even
+        return;
+    copyrect = RectEvenWidth(copyrect); // force copy rect to be even
     winsizex = Xwindowrect.sizex;
     winsizey = Xwindowrect.sizey;
     if(winsizex & 1) {
-	fprintf(stderr, "Error: window size x must be even\n");
-	return;
+        fprintf(stderr, "Error: window size x must be even\n");
+        return;
     }
 
     int nbytes = winsizex * winsizey * 4;
@@ -232,17 +232,17 @@ void xdisplayGLbuffer(Rect copyrect)	// copy this rectangleto the X window
     }
     glFinish();
     glReadPixels(copyrect.orgx, copyrect.orgy, copyrect.sizex, copyrect.sizey, 
-						GL_RGBA, GL_UNSIGNED_BYTE, pixbuffer);
+                                                GL_RGBA, GL_UNSIGNED_BYTE, pixbuffer);
     int y;
     unsigned int *pixptr = pixbuffer;
     for(y=0; y<copyrect.sizey; y++) {
-	int dsty = copyrect.sizey-1-y;          // flip y for X windows
+        int dsty = copyrect.sizey-1-y;          // flip y for X windows
         unsigned int *dptr = (unsigned int *)(&(Ximage->data[0]));
-	dptr = dptr + (dsty*winsizex);
-	int x = copyrect.sizex;
+        dptr = dptr + (dsty*winsizex);
+        int x = copyrect.sizex;
         while(x--) {
-	    int p = *pixptr++;
-	    *dptr++ = CPACKX(RVALGL(p), GVALGL(p), BVALGL(p), 0);
+            int p = *pixptr++;
+            *dptr++ = CPACKX(RVALGL(p), GVALGL(p), BVALGL(p), 0);
         }
     }
 
@@ -309,11 +309,11 @@ void eglinit()
     egl_display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     if (egl_display == EGL_NO_DISPLAY) {
         fputs("Got no EGL display.\n", stderr);
-	exit(1);
+        exit(1);
     }
     if (!eglInitialize(egl_display, NULL, NULL)) {
         fputs("Unable to initialize EGL\n", stderr);
-	exit(1);
+        exit(1);
     }
 
     EGLint attr[] = { // some attributes to set up our egl-interface
@@ -330,11 +330,11 @@ void eglinit()
 
     if (!eglChooseConfig(egl_display, attr, &ecfg, 1, &num_config)) {
         fprintf(stderr, "Failed to choose config (eglError: %s)\n", eglGetError());
-	exit(1);
+        exit(1);
     }
     if (num_config != 1) {
         fprintf(stderr, "Didn't get exactly one config, but %d\n", num_config);
-	exit(1);
+        exit(1);
     }
 
     EGLint rt;
@@ -366,7 +366,7 @@ void eglinit()
     egl_surface = eglCreatePixmapSurface(egl_display, ecfg, pixmap, 0);
     if (egl_surface == EGL_NO_SURFACE) {
         fprintf(stderr, "Unable to create EGL surface (eglError: %d)\n", eglGetError());
-	exit(1);
+        exit(1);
     }
 
     //// egl-contexts collect all state descriptions needed required for operation
@@ -377,7 +377,7 @@ void eglinit()
     egl_context = eglCreateContext(egl_display, ecfg, EGL_NO_CONTEXT, ctxattr);
     if (egl_context == EGL_NO_CONTEXT) {
         fprintf(stderr, "Unable to create EGL context (eglError: %s)\n", eglGetError());
-	exit(1);
+        exit(1);
     }
 
     //// associate the egl-context with the egl-surface
