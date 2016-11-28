@@ -2,7 +2,7 @@
 //  Created by exoticorn (http://talk.maemo.org/showthread.php?t=37356)
 //  edited and commented by André Bergner [endboss]
 //
-//  libraries needed: -lEGL -lGLESv2 -lX11
+//  libraries needed: -lEGL -lGLESv2 -lbcm_host -lX11
 //
 //
 #include <stdio.h>
@@ -189,10 +189,10 @@ void xwindowscleanup()
     XCloseDisplay(Xdsp);
 }
 
-#define SHIFTGL_R       (24)    // I don't know why red data is 255
-#define SHIFTGL_G       ( 0)
-#define SHIFTGL_B       ( 8)
-#define SHIFTGL_A       (16)
+#define SHIFTGL_R       ( 0)
+#define SHIFTGL_G       ( 8)
+#define SHIFTGL_B       (16)
+#define SHIFTGL_A       (24)
 
 #define RVALGL(l)       ((int)(((l)>>SHIFTGL_R)&0xff))
 #define GVALGL(l)       ((int)(((l)>>SHIFTGL_G)&0xff))
@@ -201,9 +201,9 @@ void xwindowscleanup()
 
 #define CPACKGL(r,g,b,a)  (((r)<<SHIFTGL_R) | ((g)<<SHIFTGL_G) | ((b)<<SHIFTGL_B) | ((a)<<SHIFTGL_A))
 
-#define SHIFTX_B         ( 0)
-#define SHIFTX_G         ( 8)
 #define SHIFTX_R         (16)
+#define SHIFTX_G         ( 8)
+#define SHIFTX_B         ( 0)
 #define SHIFTX_A         (24)
 
 #define CPACKX(r,g,b,a)  (((r)<<SHIFTX_R) | ((g)<<SHIFTX_G) | ((b)<<SHIFTX_B) | ((a)<<SHIFTX_A))
@@ -245,13 +245,7 @@ void xdisplayGLbuffer(Rect copyrect)    // copy this rectangleto the X window
         int x = copyrect.sizex;
         while(x--) {
             int p = *pixptr++;
-#define REDALWAYS255    // why is Red data return by ReadPixels always 0xff?
-#ifdef REDALWAYS255
-            int gray = (GVALGL(p)+BVALGL(p))/2;
-            *dptr++ = CPACKX(gray, gray, gray, 255);
-#else
             *dptr++ = CPACKX(RVALGL(p), GVALGL(p), BVALGL(p), 255);
-#endif
         }
     }
     orgx = copyrect.orgx;
