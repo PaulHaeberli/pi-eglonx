@@ -51,7 +51,6 @@ void client_exposeevent();
 void client_render();
 void client_glinit();
 
-
 //// signal interrupt handler
 
 static bool sigkeeprunning = true;
@@ -66,7 +65,6 @@ void signalinit()
     signal(SIGINT, sighandler);
     signal(SIGQUIT, sighandler);
 }
-
 
 //// Rect support
 
@@ -172,13 +170,18 @@ void xwindowsinit()
     //// create an X image for drawing to the screen
     Xgc = DefaultGC(Xdsp, 0);
     XGetWindowAttributes(Xdsp, Xwin, &Xgwa);
+
     char *buf = (char *)malloc(Xgwa.width*Xgwa.height*4);
     Ximage = XCreateImage(Xdsp, 
                 DefaultVisual(Xdsp, DefaultScreen(Xdsp)),
                 DefaultDepth(Xdsp, DefaultScreen(Xdsp)),
                 ZPixmap, 0, buf, Xgwa.width, Xgwa.height, 32, 0);
-    Xwindowrect = RectMake(0,0,Xgwa.width,Xgwa.height);
+
+    Xwindowrect = RectMake(0, 0, Xgwa.width, Xgwa.height);
 }
+
+
+
 
 void xwindowscleanup()
 {
@@ -186,10 +189,10 @@ void xwindowscleanup()
     XCloseDisplay(Xdsp);
 }
 
-#define SHIFTGL_R       (24)
-#define SHIFTGL_G       (16)
+#define SHIFTGL_R       (24)    // I don't know why red data is 255
+#define SHIFTGL_G       ( 0)
 #define SHIFTGL_B       ( 8)
-#define SHIFTGL_A       ( 0)
+#define SHIFTGL_A       (16)
 
 #define RVALGL(l)       ((int)(((l)>>SHIFTGL_R)&0xff))
 #define GVALGL(l)       ((int)(((l)>>SHIFTGL_G)&0xff))
@@ -242,10 +245,15 @@ void xdisplayGLbuffer(Rect copyrect)    // copy this rectangleto the X window
         int x = copyrect.sizex;
         while(x--) {
             int p = *pixptr++;
-            *dptr++ = CPACKX(RVALGL(p), GVALGL(p), BVALGL(p), 0);
+#define REDALWAYS255    // why is Red data return by ReadPixels always 0xff?
+#ifdef REDALWAYS255
+            int gray = (GVALGL(p)+BVALGL(p))/2;
+            *dptr++ = CPACKX(gray, gray, gray, 255);
+#else
+            *dptr++ = CPACKX(RVALGL(p), GVALGL(p), BVALGL(p), 255);
+#endif
         }
     }
-
     orgx = copyrect.orgx;
     orgy = winsizey-(copyrect.orgy+copyrect.sizey);
     sizex = copyrect.sizex;
@@ -521,7 +529,7 @@ void client_render()
     static float phase = 0;
 
     glViewport(0 ,0 , Xgwa.width, Xgwa.height);
-    glClearColor(0.08, 0.06, 0.07, 1.0);
+    glClearColor(0.9, 0.9, 0.9, 1.0);
     glClear(GL_COLOR_BUFFER_BIT);
 
     glUniform1f(phase_loc, phase); // write the value of phase to the shaders phase
